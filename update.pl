@@ -101,10 +101,6 @@ $name = 'Ship Upgrades';
 $stats = get_stats('ship_upgrades');
 update_obj('upgrades');
 
-$name = 'Ship Upgrades';
-$stats = get_stats('ship_upgrades');
-update_obj('upgrades');
-
 $name = 'Ships Built';
 $stats = get_stats('ships_built');
 update_obj('ships_built');
