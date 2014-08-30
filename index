@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<style>
+
+body {
+  font: 10px sans-serif;
+  background-color: black;
+}
+
+svg {
+    display: block;
+    margin: auto auto;
+}
+
+.axis path,
+.axis line {
+  fill: none;
+  stroke: white;
+  shape-rendering: crispEdges;
+}
+.tick text {
+    fill: white;
+    font-size: 1.3em;
+}
+
+text.title {
+    font: 1.8em sans-serif;
+    fill: white;
+    text-decoration: underline;
+}
+
+text.round-display {
+    font: 1.8em sans-serif;
+    fill: white;
+}
+
+text.legend {
+    font: 1.4em sans-serif;
+}
+
+.x.axis path {
+  display: none;
+}
+
+.line {
+  fill: none;
+  stroke-width: 2px;
+}
+
+</style>
+<body>
+<script src="http://d3js.org/d3.v3.js"></script>
+<script>
+
+var margin = {top: 20, right: 50, bottom: 35, left: 110},
+    width = 1000 - margin.left - margin.right,
+    height = 720 - margin.top - margin.bottom;
+
+var x = d3.scale.linear()
+    .range([0, width - 160 ]);
+
+var y = d3.scale.linear()
+    .range([height, 0]);
+    
+var xAxis = d3.svg.axis()
+    .scale(x)
+    .orient('bottom');
+
+var yAxis = d3.svg.axis()
+    .scale(y)
+    .orient('left');
+    
+var line = d3.svg.line()
+    .x(function(d) { return x(d.t); })
+    .y(function(d) { return y(d.v); });
+
+var svg = d3.select('body').append('svg')
+    .attr('width', width + margin.left + margin.right )
+    .attr('height', height + margin.top + margin.bottom )
+.append('g')
+    .attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+var param = window.location.href;
+var regex = /\?(.*?)(?:$|\&)/;
+var match = regex.exec( param );
+var name;
+var delay = 10000;
+var timer_interval;
+if( match === null ) {
+    var name_i = 0;
+    var names = new Array(
+        'planets',
+        'upgrades',
+        'distance',
+        'fuel_mined',
+        'damage_done',
+        'damage_taken',
+        'ships_built',
+        'ships_lost'
+    );
+    name = names[name_i];
+    draw_chart();
+    timer_interval = setInterval( change_chart, delay );
+    d3.select('body')
+        .on('keydown', function() {
+            if( d3.event.keyCode == 37 ) {
+                change_chart(1);
+            }
+            else if( d3.event.keyCode == 39 ) {
+                change_chart();
+            }
+        });
+}
+else {
+    name = match[1];
+    draw_chart();
+    timer_interval = setInterval( draw_chart, delay );
+}
+
+function change_chart( back ){
+    if( back ) {
+        name_i--;
+    }
+    else {
+        name_i++;
+    }
+    if( name_i == names.length ) {
+        name_i = 0;
+    }
+    else if( name_i < 0 ) {
+        name_i = names.length-1;
+    }
+    name = names[name_i];
+    draw_chart();
+    clearInterval(timer_interval);
+    timer_interval = setInterval( draw_chart, delay );
+}
+function draw_chart(){
+    d3.json( name + '.json',function( error, data ){
+        if( error ) return console.warn(error);
+
+        x.domain([0,data.info.max_t]);
+        y.domain([0,data.info.max_v]);
+     
+        var players = [];
+        for( var p in data ) {
+            if( p == 'info' ) {
+                continue;
+            }
+            players.push(p);
+        }
+        players.sort(function(a,b){
+            return data[b][data[b].length-1].v - data[a][data[a].length-1].v;
+        });
+        
+        svg.selectAll('*').remove();
+    
+        svg.append('image')
+            .attr('xlink:href', 'https://schemaverse.com/images/schemaverse-logo.png')
+            .attr('height', 60 )
+            .attr('width', 250 )
+            .attr('transform', 'translate(' +
+                ( width - margin.left - margin.right + 5 )
+                + ',' +
+                ( height - margin.top - 10 )
+                +')');
+
+        players.forEach(function(p, i) {
+
+            svg.append('path')
+                .datum( data[p] )
+                .attr('class', 'line')
+                .attr('stroke', '#' + data.info.players[p].c )
+                .attr('id', p )
+                .attr('d', line);
+            
+            var p_last = data[p][data[p].length-1].v;
+            
+            svg.append('text')
+                .text( data.info.players[p].n + ' : ' + p_last )
+                .attr('class', 'legend' )
+                .attr('fill', '#' + data.info.players[p].c )
+                .attr('transform', 'translate(' +
+                    ( width - margin.left - margin.right + 5 )
+                    + ',' +
+                    ( margin.top + 20 + ( ( i+1 ) * 24 ) )
+                    +')');
+        });
+        
+        xAxis.tickValues(d3.range(0,data.info.max_t,10));
+        svg.append('g')
+            .attr('class', 'x axis')
+            .attr('transform', 'translate(0,' + height + ')')
+            .call(xAxis)
+            .selectAll('text')  
+            .style('text-anchor', 'end')
+            .attr('dx', '-.8em')
+            .attr('dy', '.15em')
+            .attr('transform', function(d) {
+                return 'rotate(-45)' 
+                });
+        svg.append('g')
+            .attr('class', 'y axis')
+            .call(yAxis);
+        svg.append('text')
+            .attr('class', 'title' )
+            .text( data.info.name )
+            .attr('transform', 'translate(' +
+                ( width - margin.left - margin.right + 5 )
+                + ',' +
+                margin.top
+                +')');
+        svg.append('text')
+            .attr('class', 'round-display' )
+            .text( 'Round: ' + data.info.round + ' Tic: ' + data.info.max_t )
+            .attr('transform', 'translate(' +
+                ( width - margin.left - margin.right + 15 )
+                + ',' +
+                ( height - margin.bottom )
+                +')');
+    });
+}
+
+</script>

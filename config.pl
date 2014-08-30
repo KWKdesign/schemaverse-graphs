@@ -1,0 +1,9 @@
+{
+    aws_access_key_id     => '',
+    aws_secret_access_key => '',
+    bucket_name => '',
+
+    pass => '',
+    user => '',
+    host => 'db.schemaverse.com',
+}
