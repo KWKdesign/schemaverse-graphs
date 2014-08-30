@@ -30,18 +30,19 @@ my $dbh = DBI->connect(
     }
 ) or die "$!";
 
-my $round = $dbh->selectrow_array(q/
-    select last_value from round_seq;
-/);
-
-say strftime('%Y-%m-%d %H:%M:%S', localtime), ' - Start ' . $round;
-
 sub check_lock {
     my $locked = $dbh->selectrow_array(q/
         select status = 'Locked' from status;
     /);
     die strftime('%Y-%m-%d %H:%M:%S', localtime) . ' - Locked' if $locked;
 }
+check_lock();
+
+my $round = $dbh->selectrow_array(q/
+    select last_value from round_seq;
+/);
+
+say strftime('%Y-%m-%d %H:%M:%S', localtime), ' - Start ' . $round;
 
 my $s3 = Net::Amazon::S3->new({
     aws_access_key_id		=> $config->{aws_access_key_id},
