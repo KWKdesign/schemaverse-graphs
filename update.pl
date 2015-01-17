@@ -14,7 +14,6 @@ use List::Util qw/max min/;
 use DBI;
 use POSIX qw/strftime/;
 use JSON qw/to_json from_json/;
-use Net::Amazon::S3;
 
 my $config = eval{ do 'config.pl' } or die 'No Config';
 
@@ -38,18 +37,29 @@ sub check_lock {
 }
 check_lock();
 
+my $last_tic = eval{ do 'last_tic' } || 0;
+my $cur_tic = $dbh->selectrow_array(q/
+    select last_value from tic_seq;
+/);
+my $last_round = eval{ do 'last_round' } || 0;
 my $round = $dbh->selectrow_array(q/
     select last_value from round_seq;
 /);
+if ( ( $round > $last_round ) or ( $cur_tic > $last_tic ) ) {
+    my $fh;
+    open $fh, '>', 'last_round' or die $!;
+    print $fh $last_round;
+    close $fh;
+    open $fh, '>', 'last_tic' or die $!;
+    print $fh $cur_tic;
+    close $fh;
+}
+else {
+    die 'Not a new tic';
+}
+
 
 say strftime('%Y-%m-%d %H:%M:%S', localtime), ' - Start ' . $round;
-
-my $s3 = Net::Amazon::S3->new({
-    aws_access_key_id		=> $config->{aws_access_key_id},
-    aws_secret_access_key	=> $config->{aws_secret_access_key},
-});
-my $c = Net::Amazon::S3::Client->new( s3 => $s3 );
-my $bucket = $c->bucket( name => $config->{bucket_name} );
 
 my $colors = [qw/1f77b4 aec7e8 ff7f0e ffbb78 2ca02c 98df8a d62728 ff9896 9467bd c5b0d5 8c564b c49c94 e377c2 f7b6d2 7f7f7f c7c7c7 bcbd22 dbdb8d 17becf 9edae5/];
 my $luma_threshold = 5;
@@ -64,7 +74,7 @@ sub check_luma {
 
 my( $players, $stats, $name );
 
-$name = 'Planets Conquered';
+$name = 'Planets';
 $stats = $dbh->selectall_hashref(q/
     select conqueror_id::text p, count(1) v,
     ( select last_value from tic_seq ) t,
@@ -80,6 +90,14 @@ $stats = $dbh->selectall_hashref(q/
     ;
 /, 'p');
 update_obj('planets');
+
+$name = 'Planets Conquered';
+$stats = get_stats('planets_conquered');
+update_obj('planets_conquered');
+
+$name = 'Planets Lost';
+$stats = get_stats('planets_lost');
+update_obj('planets_lost');
 
 $name = 'Fuel Mined';
 $stats = get_stats('fuel_mined');
@@ -109,8 +127,26 @@ $name = 'Ships Lost';
 $stats = get_stats('ships_lost');
 update_obj('ships_lost');
 
+$name = 'Ships Living';
+$stats = $dbh->selectall_hashref(q/
+    select player_id::text p, ships_built - ships_lost v,
+    ( select last_value from tic_seq ) t,
+    ( select last_value from round_seq ) r
+    from current_player_stats
+    where ships_built - ships_lost > 0
+    and player_id in (
+        select id from player_list
+        where 1=1
+        and rgb is not null
+        and symbol is not null
+    )
+    ;     
+/, 'p');
+update_obj('ships_living');
+
+
 sub get_stats {
-    check_lock();
+    # check_lock();
     my $field = shift;
     my $stats = $dbh->selectall_hashref(q/
         select player_id::text p, /. $field . q/ v,
@@ -124,7 +160,7 @@ sub get_stats {
             and rgb is not null
             and symbol is not null
         )
-        ;     
+        ;
     /, 'p');    
     return $stats;
 }
@@ -148,64 +184,112 @@ sub get_player_info {
 
 sub update_obj {
     my $stat = shift;
+    # say $stat;
     my ( $object, $obj );
-    return unless scalar keys %$stats;
-    $players->{$_} = 1 for keys %$stats;
-    $object = $bucket->object(
-        key => 'stats/' . $round . '_' . $stat . '.json',
-        acl_short => 'public-read',
-        content_type => 'application/json',
-    );
-    $obj = from_json( $object->get ) if $object->exists;
-    delete $obj->{info};
-    for my $p ( keys %$stats ) {
-        my $row = $stats->{$p};
-        unless( exists $obj->{$p} ) {
-            $obj->{$p} = [{ t => $row->{t}, v => $row->{v} }];
-        }
-        else {
-            my $vals = $obj->{$p};
-            my $found;
-            for ( reverse( 0 .. $#$vals ) ) {
-                if( $vals->[$_]->{t} eq $row->{t} ) {
-                    $vals->[$_]->{v} = $row->{v};
-                    $found = 1;
-                    last;
-                }
+    
+    my $bucket;
+    if( defined $config->{s3_backend} and $config->{s3_backend} == 1 and eval "require Net::Amazon::S3" ) {
+        my $s3 = Net::Amazon::S3->new({
+            aws_access_key_id		=> $config->{aws_access_key_id},
+            aws_secret_access_key	=> $config->{aws_secret_access_key},
+        });
+        my $c = Net::Amazon::S3::Client->new( s3 => $s3 );
+        $bucket = $c->bucket( name => $config->{bucket_name} );
+        $object = $bucket->object(
+            key => 'stats/' . $round . '_' . $stat . '.json',
+            acl_short => 'public-read',
+            content_type => 'application/json',
+        );
+        $obj = from_json( $object->get ) if $object->exists
+    }
+    if( defined $config->{write_file} and $config->{write_file} == 1 ) {
+        if( -e $config->{path} . $round . '_' . $stat . '.json' ) {
+            my $json = '';
+            {
+                local $/;
+                open my $fh, '<', $config->{path} . $round . '_' . $stat . '.json';
+                $json = <$fh>;                
             }
-            if( not $found ) {
-                push @$vals, { t => $row->{t}, v => $row->{v} };
-            }
+            $obj = from_json( $json );
         }
     }
+    delete $obj->{info};
     my $max_v = 0;
     my $max_t = 0;
-    my $p_max;
-    for my $p ( keys %$obj ) {
-        my $vals = $obj->{$p};
-        $p_max = max( map { $_->{v} } @$vals );
-        if( $p_max > $max_v ) {
-            $max_v = $p_max;
+    if( scalar keys %$stats ) {
+        $players->{$_} = 1 for keys %$stats;
+        
+        for my $p ( keys %$stats ) {
+            my $row = $stats->{$p};
+            unless( exists $obj->{$p} ) {
+                $obj->{$p} = [{ t => $row->{t}, v => $row->{v} }];
+            }
+            else {
+                my $vals = $obj->{$p};
+                my $found;
+                for ( reverse( 0 .. $#$vals ) ) {
+                    if( $vals->[$_]->{t} eq $row->{t} ) {
+                        $vals->[$_]->{v} = $row->{v};
+                        $found = 1;
+                        last;
+                    }
+                }
+                if( not $found ) {
+                    push @$vals, { t => $row->{t}, v => $row->{v} };
+                }
+            }
         }
-        $p_max = max( map { $_->{t} } @$vals );
-        if( $p_max > $max_t ) {
-            $max_t = $p_max;
+        my $p_max;
+        for my $p ( keys %$obj ) {
+            my $vals = $obj->{$p};
+            $p_max = max( map { $_->{v} } @$vals );
+            if( $p_max > $max_v ) {
+                $max_v = $p_max;
+            }
+            $p_max = max( map { $_->{t} } @$vals );
+            if( $p_max > $max_t ) {
+                $max_t = $p_max;
+            }
         }
     }
+    if( scalar keys %$obj ) {
+        my $seen = {};
+        $seen->{$_}++ for keys %$obj;
+        $seen->{$_}++ for keys %$stats;
+        for my $p ( grep { $seen->{$_} == 1 } keys %$seen ) {
+            my $vals = $obj->{$p};
+            if( $vals->[-1]->{v} != 0 ) {
+                push @$vals, { t => $cur_tic, v => 0 };
+            }
+        }
+        $obj->{info}->{players} = get_player_info([ keys %$obj ]);
+    }    
     $obj->{info}->{round} = $round;
+    $obj->{info}->{name} = $name;
     $obj->{info}->{max_v} = $max_v;
     $obj->{info}->{max_t} = $max_t;
-    $obj->{info}->{players} = get_player_info([ grep { $_ ne 'info' } keys %$obj ]);
-    $obj->{info}->{name} = $name;
 
     $obj = to_json( $obj );
-    $object->put( $obj );
-    $object = $bucket->object(
-        key => 'stats/' . $stat . '.json',
-        acl_short => 'public-read',
-        content_type => 'application/json',
-    );
-    $object->put( $obj );
+    if( defined $config->{s3_backend} and $config->{s3_backend} == 1 and eval "require Net::Amazon::S3" ) {
+        $object->put( $obj );
+        $object = $bucket->object(
+            key => 'stats/' . $stat . '.json',
+            acl_short => 'public-read',
+            content_type => 'application/json',
+        );
+        $object->put( $obj );
+        # say $object->key;
+    }
+    if( defined $config->{write_file} and $config->{write_file} == 1 ) {
+        my $fh;
+        open $fh, '>', $config->{path} . $stat . '.json' or die $!;
+        print $fh $obj;
+        close $fh;
+        open $fh, '>', $config->{path} . $round . '_' . $stat . '.json' or die $!;
+        print $fh $obj;
+        close $fh;
+    }
+    check_lock(); # safe to stop, check the lock
 }
 
 $pidfile->remove();
